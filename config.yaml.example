@@ -1,0 +1,37 @@
+wakeupLight:
+  module: i1_wakeup_light
+  class: WakeupLight
+  entity: "light.bedroom_lamp"
+  calendar: "wakeup_light_exceptions"
+  max_brightness: 255
+  days:
+    monday:
+      active: True
+      start: "6:20"
+      end: "6:40"
+      turnoff: "6:50"
+    tuesday:
+      active: True
+      start: "6:20"
+      end: "6:40"
+      turnoff: "6:50"
+    wednesday:
+      active: True
+      start: "6:30"
+      end: "6:50"
+      turnoff: "7:00"
+    thursday:
+      active: True
+      start: "6:30"
+      end: "6:50"
+      turnoff: "7:00"
+    friday:
+      active: True
+      start: "6:30"
+      end: "6:50"
+      turnoff: "7:00"
+    saturday:
+      active: False
+    sunday:
+      active: False
+  freq: 60
