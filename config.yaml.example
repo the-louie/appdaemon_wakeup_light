@@ -1,37 +1,56 @@
+# Wakeup Light Configuration Example
+# This app gradually increases light brightness during wakeup times
 wakeupLight:
   module: i1_wakeup_light
   class: WakeupLight
+
+  # Light entity to control (required)
+  # Must support brightness control
   entity: "light.bedroom_lamp"
+
+  # Calendar entity for exceptions (optional)
+  # Set to null/None if no calendar exceptions needed
+  # Calendar should be "on" when you want to skip wakeup light
   calendar: "wakeup_light_exceptions"
+
+  # Maximum brightness (0-255, optional, default: 254)
+  # 0 = off, 255 = full brightness
   max_brightness: 255
+
+  # Brightness adjustment frequency in seconds (optional, default: 60)
+  # Lower values = smoother transitions, higher values = less frequent updates
+  # Recommended: 30-120 seconds
+  freq: 60
+
+  # Daily schedule configuration (required)
+  # Each day can be enabled/disabled and have custom times
   days:
     monday:
-      active: True
-      start: "6:20"
-      end: "6:40"
-      turnoff: "6:50"
+      active: true              # Enable wakeup light for Monday
+      start: "6:20"             # Start time for brightness ramp (HH:MM)
+      end: "6:40"               # End time for brightness ramp (HH:MM)
+      turnoff: "6:50"           # Time to turn off light completely (HH:MM)
     tuesday:
-      active: True
+      active: true
       start: "6:20"
       end: "6:40"
       turnoff: "6:50"
     wednesday:
-      active: True
-      start: "6:30"
+      active: true
+      start: "6:30"             # Later start time for Wednesday
       end: "6:50"
       turnoff: "7:00"
     thursday:
-      active: True
+      active: true
       start: "6:30"
       end: "6:50"
       turnoff: "7:00"
     friday:
-      active: True
+      active: true
       start: "6:30"
       end: "6:50"
       turnoff: "7:00"
     saturday:
-      active: False
+      active: false             # No wakeup light on weekends
     sunday:
-      active: False
-  freq: 60
+      active: false             # No wakeup light on weekends
