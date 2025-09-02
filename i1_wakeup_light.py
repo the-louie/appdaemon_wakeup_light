@@ -14,6 +14,7 @@ class WakeupLight(hass.Hass):
         # State tracking
         self.calendar_exception_cached = False
         self.active_timer = None
+        self.turnoff_timer = None
 
         self.log("WakeupLight started, {}".format(self.entity))
 
@@ -57,10 +58,8 @@ class WakeupLight(hass.Hass):
 
     def setup_day_schedule(self):
         """Setup the schedule for the current day"""
-        # Cancel any existing timer
-        if self.active_timer:
-            self.cancel_timer(self.active_timer)
-            self.active_timer = None
+        # Cancel any existing timers
+        self.cancel_all_timers()
 
         # Check if we should run today
         if self.calendar_exception_cached:
@@ -95,6 +94,15 @@ class WakeupLight(hass.Hass):
             self.log("Scheduling turnoff in {:.0f} seconds".format(delay))
             self.active_timer = self.run_in(self.turn_off_light, delay)
 
+    def cancel_all_timers(self):
+        """Cancel all active timers"""
+        if self.active_timer:
+            self.cancel_timer(self.active_timer)
+            self.active_timer = None
+        if self.turnoff_timer:
+            self.cancel_timer(self.turnoff_timer)
+            self.turnoff_timer = None
+
     def start_brightness_cycle(self, kwargs=None):
         """Start the brightness adjustment cycle"""
         schedule = self.get_today_schedule()
@@ -112,23 +120,34 @@ class WakeupLight(hass.Hass):
             "now",
             self.adjust_freq,
             ramp_duration=ramp_duration,
-            start_time=start_time
+            start_time=start_time,
+            end_time=end_time
         )
 
         # Schedule turnoff
         turnoff_delay = (turnoff_time - datetime.now()).total_seconds()
         if turnoff_delay > 0:
-            self.run_in(self.turn_off_light, turnoff_delay)
+            self.turnoff_timer = self.run_in(self.turn_off_light, turnoff_delay)
 
     def adjust_brightness(self, kwargs):
         """Adjust brightness based on time progression"""
         ramp_duration = kwargs.get('ramp_duration', 1200)
         start_time = kwargs.get('start_time')
+        end_time = kwargs.get('end_time')
 
         if not start_time:
             return
 
-        elapsed = (datetime.now() - start_time).total_seconds()
+        now = datetime.now()
+        elapsed = (now - start_time).total_seconds()
+
+        # Stop brightness adjustments if we're past the end time
+        if end_time and now >= end_time:
+            self.log("Brightness ramp complete, stopping adjustments")
+            if self.active_timer:
+                self.cancel_timer(self.active_timer)
+                self.active_timer = None
+            return
 
         # Calculate brightness
         if elapsed <= 0:
@@ -146,9 +165,7 @@ class WakeupLight(hass.Hass):
         self.log("Turning off light")
         self.turn_off(self.entity)
 
-        # Cancel brightness adjustments
-        if self.active_timer:
-            self.cancel_timer(self.active_timer)
-            self.active_timer = None
+        # Cancel all timers
+        self.cancel_all_timers()
 
 
