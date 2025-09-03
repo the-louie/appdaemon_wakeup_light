@@ -219,7 +219,7 @@ Feel free to submit issues or pull requests for improvements!
 
 This project is open source and available under the 2-Clause BSD License.
 
-Copyright (c) 2024 the_louie
+Copyright (c) 2025 the_louie
 
 Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
 

@@ -1,13 +1,24 @@
-from datetime import datetime
 import appdaemon.plugins.hass.hassapi as hass
+from datetime import datetime
 import math
+from typing import Dict, Optional
+
 
 class WakeupLight(hass.Hass):
     def initialize(self):
         """Initialize the wakeup light app with configuration and scheduling"""
-        self.entity = self.args.get("entity")
+        # Validate required configuration
+        if not self.args.get("entity"):
+            self.log("Error: 'entity' parameter is required", level="ERROR")
+            return
+
+        if not self.args.get("days"):
+            self.log("Error: 'days' parameter is required", level="ERROR")
+            return
+
+        self.entity = self.args["entity"]
         self.max_brightness = self.args.get("max_brightness", 254)
-        self.days = self.args.get("days", {})
+        self.days = self.args["days"]
         self.adjust_freq = self.args.get("freq", 60)
         self.cal_name = self.args.get("calendar")
 
@@ -16,7 +27,7 @@ class WakeupLight(hass.Hass):
         self.active_timer = None
         self.turnoff_timer = None
 
-        self.log("WakeupLight started, {}".format(self.entity))
+        self.log(f"WakeupLight started, {self.entity}")
 
         # Schedule initial setup and daily calendar check
         self.run_in(self.setup_day_schedule, 0)
@@ -25,15 +36,15 @@ class WakeupLight(hass.Hass):
     def check_calendar_exception(self, kwargs):
         """Check calendar exception once at 03:30 and cache the result"""
         if self.cal_name:
-            has_exception = self.get_state("calendar.{}".format(self.cal_name))
+            has_exception = self.get_state(f"calendar.{self.cal_name}")
             self.calendar_exception_cached = (has_exception != "off")
-            self.log("Calendar exception: {}".format(self.calendar_exception_cached))
+            self.log(f"Calendar exception: {self.calendar_exception_cached}")
         else:
             self.calendar_exception_cached = False
 
         self.setup_day_schedule()
 
-    def get_today_schedule(self):
+    def get_today_schedule(self) -> Optional[Dict]:
         """Get today's schedule times as datetime objects"""
         dayname = datetime.now().strftime("%A").lower()
         day_config = self.days.get(dayname, {})
@@ -46,9 +57,13 @@ class WakeupLight(hass.Hass):
         end_str = day_config.get("end", "06:40")
         turnoff_str = day_config.get("turnoff", "06:50")
 
-        start_h, start_m = map(int, start_str.split(":"))
-        end_h, end_m = map(int, end_str.split(":"))
-        turnoff_h, turnoff_m = map(int, turnoff_str.split(":"))
+        try:
+            start_h, start_m = map(int, start_str.split(":"))
+            end_h, end_m = map(int, end_str.split(":"))
+            turnoff_h, turnoff_m = map(int, turnoff_str.split(":"))
+        except (ValueError, AttributeError):
+            self.log(f"Error parsing time format for {dayname}", level="ERROR")
+            return None
 
         return {
             'start': now.replace(hour=start_h, minute=start_m, second=0, microsecond=0),
@@ -82,7 +97,7 @@ class WakeupLight(hass.Hass):
         elif now < start_time:
             # Schedule start
             delay = (start_time - now).total_seconds()
-            self.log("Scheduling start in {:.0f} seconds".format(delay))
+            self.log(f"Scheduling start in {delay:.0f} seconds")
             self.active_timer = self.run_in(self.start_brightness_cycle, delay)
         elif start_time <= now <= end_time:
             # Start immediately
@@ -91,7 +106,7 @@ class WakeupLight(hass.Hass):
         else:
             # Schedule turnoff
             delay = (turnoff_time - now).total_seconds()
-            self.log("Scheduling turnoff in {:.0f} seconds".format(delay))
+            self.log(f"Scheduling turnoff in {delay:.0f} seconds")
             self.active_timer = self.run_in(self.turn_off_light, delay)
 
     def cancel_all_timers(self):
@@ -115,6 +130,10 @@ class WakeupLight(hass.Hass):
 
         # Calculate ramp duration and schedule brightness adjustments
         ramp_duration = (end_time - start_time).total_seconds()
+        if ramp_duration <= 0:
+            self.log("Error: Invalid ramp duration", level="ERROR")
+            return
+
         self.active_timer = self.run_every(
             self.adjust_brightness,
             "now",
@@ -135,7 +154,7 @@ class WakeupLight(hass.Hass):
         start_time = kwargs.get('start_time')
         end_time = kwargs.get('end_time')
 
-        if not start_time:
+        if not start_time or ramp_duration <= 0:
             return
 
         now = datetime.now()
@@ -157,15 +176,13 @@ class WakeupLight(hass.Hass):
         else:
             brightness = math.ceil(self.max_brightness * (elapsed / ramp_duration))
 
-        self.log("Brightness: {} (elapsed: {:.0f}s)".format(brightness, elapsed))
+        self.log(f"Brightness: {brightness} (elapsed: {elapsed:.0f}s)")
         self.turn_on(self.entity, brightness=brightness)
 
     def turn_off_light(self, kwargs):
         """Turn off the light and cleanup"""
         self.log("Turning off light")
         self.turn_off(self.entity)
-
-        # Cancel all timers
         self.cancel_all_timers()
 
 
