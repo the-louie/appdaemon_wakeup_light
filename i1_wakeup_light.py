@@ -56,7 +56,7 @@ class WakeupLight(hass.Hass):
             self.log(f"Error parsing time format for {dayname}", level="ERROR")
             return None
 
-    def setup_day_schedule(self):
+    def setup_day_schedule(self, kwargs=None):
         """Setup the schedule for the current day"""
         # Cancel existing timers
         for timer in [self.active_timer, self.turnoff_timer]:
