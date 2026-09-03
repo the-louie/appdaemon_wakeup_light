@@ -1,4 +1,9 @@
 import appdaemon.plugins.hass.hassapi as hass
+# datetime is imported for the type hint only. The CLOCK is self.get_now():
+# datetime.now() is naive local time on the container, which is a different
+# thing from Home Assistant's configured timezone and, across the autumn
+# fold on 25 October, a different thing from real elapsed time. A wake-up
+# light an hour late is not a rounding error to the person it wakes.
 from datetime import datetime
 import math
 from typing import Dict, Optional
@@ -34,10 +39,32 @@ class WakeupLight(hass.Hass):
             self.log("Calendar exception active")
         self.setup_day_schedule()
 
+    @staticmethod
+    def _seconds_between(later: datetime, earlier: datetime) -> float:
+        """Real elapsed seconds, via epoch. NOT `later - earlier`.
+
+        Python does NAIVE subtraction when both operands carry the same tzinfo
+        object: "the common tzinfo attribute is ignored". Every datetime here
+        descends from one `self.get_now()` by `.replace()`, so they all share a
+        tzinfo and `later - earlier` returns the WALL-CLOCK difference.
+
+        On 2026-10-25 the clock goes back at 03:00. From 01:00 to 07:20 local
+        is 6h20m on the wall and 7h20m in reality -- 22800s against 26400s.
+        `run_in()` takes real seconds, so the naive form schedules the wake-up
+        light an hour early on that night. Making the datetimes aware does not
+        fix it on its own; computing in epoch seconds does.
+        """
+        return later.timestamp() - earlier.timestamp()
+
     def get_today_schedule(self, now: datetime = None) -> Optional[Dict]:
-        """Get today's schedule times as datetime objects"""
+        """Get today's schedule times as datetime objects.
+
+        `now` must be timezone-aware. Every caller passes `self.get_now()`,
+        AppDaemon's own clock, so the times derived here by `.replace()` are
+        aware too and the arithmetic downstream stays consistent.
+        """
         if now is None:
-            now = datetime.now()
+            now = self.get_now()
 
         dayname = now.strftime("%A").lower()
         day_config = self.days.get(dayname, {})
@@ -67,24 +94,24 @@ class WakeupLight(hass.Hass):
         if self.calendar_exception_cached:
             return
 
-        now = datetime.now()
+        now = self.get_now()
         schedule = self.get_today_schedule(now)
         if not schedule:
             return
 
         start_time, end_time, turnoff_time = schedule['start'], schedule['end'], schedule['turnoff']
 
-        if now >= turnoff_time:
+        if self._seconds_between(turnoff_time, now) <= 0:
             return
-        elif now < start_time:
-            delay = (start_time - now).total_seconds()
+        elif self._seconds_between(start_time, now) > 0:
+            delay = self._seconds_between(start_time, now)
             self.log(f"Scheduling start in {delay:.0f} seconds")
             self.active_timer = self.run_in(self.start_brightness_cycle, delay, schedule=schedule)
-        elif now <= end_time:
+        elif self._seconds_between(end_time, now) >= 0:
             self.log("Starting brightness cycle")
             self.start_brightness_cycle(schedule=schedule)
         else:
-            delay = (turnoff_time - now).total_seconds()
+            delay = self._seconds_between(turnoff_time, now)
             self.active_timer = self.run_in(self.turn_off_light, delay)
 
     def start_brightness_cycle(self, kwargs=None, schedule=None):
@@ -95,7 +122,7 @@ class WakeupLight(hass.Hass):
                 return
 
         start_time, end_time, turnoff_time = schedule['start'], schedule['end'], schedule['turnoff']
-        ramp_duration = (end_time - start_time).total_seconds()
+        ramp_duration = self._seconds_between(end_time, start_time)
 
         if ramp_duration <= 0:
             self.log("Error: Invalid ramp duration", level="ERROR")
@@ -106,7 +133,7 @@ class WakeupLight(hass.Hass):
             ramp_duration=ramp_duration, start_time=start_time, end_time=end_time
         )
 
-        turnoff_delay = (turnoff_time - datetime.now()).total_seconds()
+        turnoff_delay = self._seconds_between(turnoff_time, self.get_now())
         if turnoff_delay > 0:
             self.turnoff_timer = self.run_in(self.turn_off_light, turnoff_delay)
 
@@ -116,10 +143,10 @@ class WakeupLight(hass.Hass):
         start_time = kwargs['start_time']
         end_time = kwargs['end_time']
 
-        now = datetime.now()
-        elapsed = (now - start_time).total_seconds()
+        now = self.get_now()
+        elapsed = self._seconds_between(now, start_time)
 
-        if now >= end_time:
+        if self._seconds_between(end_time, now) <= 0:
             if self.active_timer:
                 self.cancel_timer(self.active_timer)
                 self.active_timer = None
