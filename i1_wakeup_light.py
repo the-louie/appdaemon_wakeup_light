@@ -234,8 +234,11 @@ class WakeupLight(hass.Hass):
             self.turn_off_light()
             return
 
+        # "immediate" (T-35): with "now" the first fire lands at
+        # now + freq, so the lamp sat dark for the first minute of a ramp
+        # the README says starts at `start`.
         self.active_timer = self.run_every(
-            self.adjust_brightness, "now", self.adjust_freq,
+            self.adjust_brightness, "immediate", self.adjust_freq,
             ramp_duration=ramp_duration, start_time=start_time, end_time=end_time
         )
         self.turnoff_timer = self.run_in(self.turn_off_light, turnoff_delay)
@@ -250,6 +253,14 @@ class WakeupLight(hass.Hass):
         elapsed = self._seconds_between(now, start_time)
 
         if self._seconds_between(end_time, now) <= 0:
+            # Final tick (T-35): the loop used to cancel itself here WITHOUT
+            # a last turn_on, so the ramp topped out one interval short --
+            # 238 of 255 on the live schedule, every morning, and the top
+            # of the range had never actually been exercised. Command full
+            # brightness before stopping. (brightness=255 verified against
+            # a ZHA lamp 2026-09-05: the service accepts it and the lamp
+            # clamps to its ZigBee ceiling of 254 -- no error.)
+            self.turn_on(self.entity, brightness=self.max_brightness)
             if self.active_timer:
                 self.cancel_timer(self.active_timer, silent=True)
                 self.active_timer = None

@@ -158,9 +158,15 @@ wakeupLight:
    - Past turnoff: No action needed
 
 ### **Brightness Control**
-- **Gradual Increase**: Brightness ramps from 0 to max over the specified time window
-- **Smooth Transitions**: Adjustments occur at the configured frequency
-- **Automatic Turnoff**: Light turns off at the specified turnoff time
+- **Gradual Increase**: the first adjustment fires at `start` (not one interval
+  after it), and brightness ramps toward `max_brightness` at the configured
+  frequency
+- **Full Brightness at `end`**: the final tick commands `max_brightness`
+  explicitly, so the ramp finishes at 100% rather than one interval short
+- **Automatic Turnoff**: Light turns off at the specified turnoff time; if a
+  cycle ever starts after its own turnoff (a reload between `end` and
+  `turnoff`), the light is turned off immediately instead of burning with no
+  timer
 
 ### **Exception Handling**
 - **Calendar Exceptions**: Respects calendar events to skip wakeup lights
