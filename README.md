@@ -62,7 +62,7 @@ A highly efficient and intelligent wakeup light automation for Home Assistant us
      module: i1_wakeup_light
      class: WakeupLight
      entity: "light.your_light_entity"
-     calendar: "calendar.your_calendar"  # optional
+     calendar: "your_calendar"  # optional -- bare name; the full "calendar.x" id also works
      max_brightness: 255
      freq: 60
      days:
@@ -105,7 +105,7 @@ wakeupLight:
   entity: "light.bedroom_lamp"
 
   # Calendar for exceptions (school holidays, etc.)
-  calendar: "calendar.school_holidays"
+  calendar: "school_holidays"
 
   # Maximum brightness (0-255)
   max_brightness: 255

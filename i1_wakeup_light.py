@@ -92,7 +92,20 @@ class WakeupLight(hass.Hass):
                 f"would hang AppDaemon's scheduler, not just this app"
             )
         self.adjust_freq = freq
-        self.cal_name = self.args.get("calendar")
+        # T-33 step 1 (S9-06): accept the bare name or the full entity id.
+        # The code builds "calendar.<name>" itself, but the README taught
+        # "calendar.your_calendar" -- following it produced
+        # get_state("calendar.calendar.x") -> None -> exception permanently
+        # "active" -> the light never runs, silently. The sibling
+        # (i1_wakeup_music) has carried this normalisation for months; it
+        # was never back-ported. A no-op for the deployed config, which
+        # uses the bare name.
+        cal_name = self.args.get("calendar")
+        self.cal_entity = (
+            None if not cal_name
+            else cal_name if str(cal_name).startswith("calendar.")
+            else f"calendar.{cal_name}"
+        )
         self.calendar_exception_cached = False
         self.active_timer = None
         self.turnoff_timer = None
@@ -104,7 +117,7 @@ class WakeupLight(hass.Hass):
     def check_calendar_exception(self, kwargs):
         """Check calendar exception once at 03:30 and cache result"""
         self.calendar_exception_cached = (
-            bool(self.cal_name) and self.get_state(f"calendar.{self.cal_name}") != "off"
+            bool(self.cal_entity) and self.get_state(self.cal_entity) != "off"
         )
         if self.calendar_exception_cached:
             self.log("Calendar exception active")
