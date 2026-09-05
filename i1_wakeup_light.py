@@ -1,25 +1,78 @@
 import appdaemon.plugins.hass.hassapi as hass
-# datetime is imported for the type hint only. The CLOCK is self.get_now():
-# datetime.now() is naive local time on the container, which is a different
-# thing from Home Assistant's configured timezone and, across the autumn
-# fold on 25 October, a different thing from real elapsed time. A wake-up
-# light an hour late is not a rounding error to the person it wakes.
+# datetime is imported for the type hint and %H:%M parsing only. The CLOCK is
+# self.get_now(): datetime.now() is naive local time on the container, which
+# is a different thing from Home Assistant's configured timezone and, across
+# the autumn fold on 25 October, a different thing from real elapsed time. A
+# wake-up light an hour late is not a rounding error to the person it wakes.
 from datetime import datetime
 import math
 from typing import Dict, Optional
+
+WEEKDAYS = frozenset({"monday", "tuesday", "wednesday", "thursday",
+                      "friday", "saturday", "sunday"})
+TIME_FORMATS = ("%H:%M", "%H:%M:%S")
 
 
 class WakeupLight(hass.Hass):
     def initialize(self):
         """Initialize the wakeup light app with configuration and scheduling"""
-        # Validate required configuration early
-        if not self.args.get("entity") or not self.args.get("days"):
-            self.log("Error: 'entity' and 'days' parameters are required", level="ERROR")
-            return
+        # T-32 (S9-03): config errors RAISE (policy D1). The old check
+        # logged ERROR and returned, leaving a loaded-but-inert app that
+        # looks green in the admin console and never wakes anyone. A raise
+        # is a failed app, which the watchdog reads, which reaches a phone.
+        # Every rule below is preflight-proven against the live config
+        # (tools/wakeup_light_preflight.py, ALL RULES PASS 2026-09-05).
+        self.entity = self.args.get("entity")
+        if not self.entity:
+            raise ValueError("'entity' is required")
+        if not self.entity_exists(self.entity):
+            raise ValueError(f"entity {self.entity!r} does not exist in "
+                             f"Home Assistant -- waiting will not fix it")
 
-        self.entity = self.args["entity"]
-        self.max_brightness = self.args.get("max_brightness", 254)
-        self.days = self.args["days"]
+        mb = self.args.get("max_brightness", 254)
+        if (isinstance(mb, bool) or not isinstance(mb, (int, float))
+                or not 1 <= mb <= 255):
+            raise ValueError(f"'max_brightness' must be a number in 1..255, "
+                             f"got {mb!r}")
+        self.max_brightness = mb
+
+        self.days = self.args.get("days")
+        if not isinstance(self.days, dict) or not self.days:
+            raise ValueError(f"'days' must be a non-empty dict of weekday "
+                             f"configs, got {self.days!r}")
+        # Parse and check every day at startup, so no runtime path parses
+        # config: a capital-M "Monday" used to be a silent daily no-op
+        # (C10), a partial day silently mixed user values with defaults
+        # into end-before-start (C8), and the parser rejected forms the
+        # platform accepts while an unquoted 6:30 arrived as the int 390
+        # (C9). All four are now startup raises that name the problem.
+        self._weekday_times = {}
+        for day, cfg in self.days.items():
+            if day not in WEEKDAYS:
+                raise ValueError(
+                    f"day key {day!r} is not a lowercase weekday name -- "
+                    f"a 'Monday' would never match strftime('%A').lower() "
+                    f"and that morning would silently not exist")
+            if not isinstance(cfg, dict):
+                raise ValueError(f"{day}: config must be a dict, got {cfg!r}")
+            if not cfg.get("active", False):
+                continue
+            missing = [k for k in ("start", "end", "turnoff") if k not in cfg]
+            if missing:
+                raise ValueError(
+                    f"{day}: active day is missing {missing} -- a partially "
+                    f"specified day is a config error, not something to "
+                    f"fill with defaults")
+            parsed = {}
+            for key in ("start", "end", "turnoff"):
+                parsed[key] = self._parse_time_of_day(day, key, cfg[key])
+            if not (parsed["start"] < parsed["end"] < parsed["turnoff"]):
+                raise ValueError(
+                    f"{day}: times must satisfy start < end < turnoff, got "
+                    f"{cfg['start']} / {cfg['end']} / {cfg['turnoff']} -- "
+                    f"out of order, the turnoff timer is never created and "
+                    f"the light burns until someone notices")
+            self._weekday_times[day] = parsed
         # T-31 (S9-02): freq reaches run_every, and AD 4.5.13's scheduler
         # resolves the next period in a sync while-loop on the MAIN event
         # loop: `while aware_next <= now: aware_next += interval`. Four
@@ -58,6 +111,25 @@ class WakeupLight(hass.Hass):
         self.setup_day_schedule()
 
     @staticmethod
+    def _parse_time_of_day(day, key, value):
+        """A str in %H:%M or %H:%M:%S -> datetime.time, or a raise that
+        names the trap. Non-str is rejected explicitly: unquoted YAML
+        `start: 6:30` arrives as the int 390 (PyYAML 1.1 sexagesimal).
+        Same rule as tools/wakeup_light_preflight.py -- change both."""
+        if not isinstance(value, str):
+            raise ValueError(
+                f"{day}: {key} must be a quoted string like \"6:30\", got "
+                f"{value!r} ({type(value).__name__}) -- an unquoted 6:30 in "
+                f"YAML is the integer 390")
+        for fmt in TIME_FORMATS:
+            try:
+                return datetime.strptime(value, fmt).time()  # noqa: DTZ007 -- time of day, no zone
+            except ValueError:
+                continue
+        raise ValueError(f"{day}: {key} must be HH:MM or HH:MM:SS, got "
+                         f"{value!r}")
+
+    @staticmethod
     def _seconds_between(later: datetime, earlier: datetime) -> float:
         """Real elapsed seconds, via epoch. NOT `later - earlier`.
 
@@ -90,16 +162,12 @@ class WakeupLight(hass.Hass):
         if not day_config.get("active", False):
             return None
 
-        try:
-            times = {}
-            for key in ["start", "end", "turnoff"]:
-                time_str = day_config.get(key, "06:20" if key == "start" else "06:40" if key == "end" else "06:50")
-                hour, minute = map(int, time_str.split(":"))
-                times[key] = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            return times
-        except (ValueError, AttributeError):
-            self.log(f"Error parsing time format for {dayname}", level="ERROR")
-            return None
+        # Times were parsed and ordered at startup (T-32); nothing here
+        # can fail at 06:30 on a school morning any more.
+        parsed = self._weekday_times[dayname]
+        return {key: now.replace(hour=t.hour, minute=t.minute,
+                                 second=t.second, microsecond=0)
+                for key, t in parsed.items()}
 
     def setup_day_schedule(self, kwargs=None):
         """Setup the schedule for the current day"""
@@ -146,14 +214,27 @@ class WakeupLight(hass.Hass):
             self.log("Error: Invalid ramp duration", level="ERROR")
             return
 
+        # C7 failsafe (T-32), checked BEFORE the ramp starts: if the
+        # turnoff is already past when we get here (an app reload between
+        # end and turnoff, or clock skew), starting a ramp with no turnoff
+        # timer leaves the light burning until someone notices. Turn it
+        # off now, loudly, instead.
+        turnoff_delay = self._seconds_between(turnoff_time, self.get_now())
+        if turnoff_delay <= 0:
+            self.log(
+                f"turnoff {turnoff_time.strftime('%H:%M')} is already past "
+                f"at cycle start -- not ramping, turning {self.entity} off "
+                f"now rather than leaving it lit with no turnoff timer",
+                level="ERROR",
+            )
+            self.turn_off_light()
+            return
+
         self.active_timer = self.run_every(
             self.adjust_brightness, "now", self.adjust_freq,
             ramp_duration=ramp_duration, start_time=start_time, end_time=end_time
         )
-
-        turnoff_delay = self._seconds_between(turnoff_time, self.get_now())
-        if turnoff_delay > 0:
-            self.turnoff_timer = self.run_in(self.turn_off_light, turnoff_delay)
+        self.turnoff_timer = self.run_in(self.turn_off_light, turnoff_delay)
 
     def adjust_brightness(self, kwargs):
         """Adjust brightness based on time progression"""
