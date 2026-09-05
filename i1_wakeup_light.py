@@ -172,9 +172,13 @@ class WakeupLight(hass.Hass):
     def setup_day_schedule(self, kwargs=None):
         """Setup the schedule for the current day"""
         # Cancel existing timers
+        # silent=True (T-34): a non-repeating handle is popped when it
+        # fires, so cancelling it afterwards is routine -- the un-silenced
+        # WARNING appeared every morning and trained the operator to
+        # ignore the one log where real failures surface.
         for timer in [self.active_timer, self.turnoff_timer]:
             if timer:
-                self.cancel_timer(timer)
+                self.cancel_timer(timer, silent=True)
         self.active_timer = self.turnoff_timer = None
 
         if self.calendar_exception_cached:
@@ -198,7 +202,7 @@ class WakeupLight(hass.Hass):
             self.start_brightness_cycle(schedule=schedule)
         else:
             delay = self._seconds_between(turnoff_time, now)
-            self.active_timer = self.run_in(self.turn_off_light, delay)
+            self.turnoff_timer = self.run_in(self.turn_off_light, delay)
 
     def start_brightness_cycle(self, kwargs=None, schedule=None):
         """Start the brightness adjustment cycle"""
@@ -247,7 +251,7 @@ class WakeupLight(hass.Hass):
 
         if self._seconds_between(end_time, now) <= 0:
             if self.active_timer:
-                self.cancel_timer(self.active_timer)
+                self.cancel_timer(self.active_timer, silent=True)
                 self.active_timer = None
             return
 
@@ -265,7 +269,7 @@ class WakeupLight(hass.Hass):
         self.turn_off(self.entity)
         for timer in [self.active_timer, self.turnoff_timer]:
             if timer:
-                self.cancel_timer(timer)
+                self.cancel_timer(timer, silent=True)
         self.active_timer = self.turnoff_timer = None
 
 
