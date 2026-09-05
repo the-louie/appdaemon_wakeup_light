@@ -218,8 +218,25 @@ class WakeupLight(hass.Hass):
             self.turnoff_timer = self.run_in(self.turn_off_light, delay)
 
     def start_brightness_cycle(self, kwargs=None, schedule=None):
-        """Start the brightness adjustment cycle"""
+        """Start the brightness adjustment cycle.
+
+        The schedule pinned at scheduling time is preferred over a recompute
+        at fire time -- a recompute is the one place a ramp scheduled late
+        in the evening could select a DIFFERENT day's configuration.
+        """
+        # C6 (T-36): when this fires via run_in(..., schedule=schedule), AD
+        # 4.5.13 folds the partial's keywords into the single positional
+        # dict (utils.py:1244-1255 has_expanded_kwargs is False without
+        # **kwargs; threads.py:1074-1083 does the folding), so the pinned
+        # schedule arrives INSIDE `kwargs` and the named parameter stays
+        # None. Read it out of the collapsed dict; do not "fix" this back
+        # to trusting the parameter.
         if schedule is None:
+            schedule = (kwargs or {}).get("schedule")
+            if schedule is not None:
+                self.log("Using schedule pinned at scheduling time", level="DEBUG")
+        if schedule is None:
+            self.log("No pinned schedule; recomputing for today", level="DEBUG")
             schedule = self.get_today_schedule()
             if not schedule:
                 return
