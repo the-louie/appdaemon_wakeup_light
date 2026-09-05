@@ -20,7 +20,25 @@ class WakeupLight(hass.Hass):
         self.entity = self.args["entity"]
         self.max_brightness = self.args.get("max_brightness", 254)
         self.days = self.args["days"]
-        self.adjust_freq = self.args.get("freq", 60)
+        # T-31 (S9-02): freq reaches run_every, and AD 4.5.13's scheduler
+        # resolves the next period in a sync while-loop on the MAIN event
+        # loop: `while aware_next <= now: aware_next += interval`. Four
+        # config values make that loop never terminate and hang all of
+        # AppDaemon: 0, a negative, an empty value (the key present makes
+        # args.get return None, and parse_timedelta(None) is timedelta(0)),
+        # and an unparseable string (also timedelta(0)). A raise here is a
+        # failed app in the admin console; a hang is every app dead with
+        # nothing in the log. Preflight-proven against the live config
+        # (int 60): tools/wakeup_light_preflight.py, ALL RULES PASS.
+        freq = self.args.get("freq", 60)
+        if (isinstance(freq, bool) or not isinstance(freq, (int, float))
+                or freq <= 0):
+            raise ValueError(
+                f"'freq' must be a number of seconds > 0, got {freq!r} "
+                f"({type(freq).__name__}); an empty or unparseable value "
+                f"would hang AppDaemon's scheduler, not just this app"
+            )
+        self.adjust_freq = freq
         self.cal_name = self.args.get("calendar")
         self.calendar_exception_cached = False
         self.active_timer = None
