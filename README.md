@@ -23,10 +23,23 @@ A highly efficient and intelligent wakeup light automation for Home Assistant us
 - **Weekend Support**: Easy to disable on weekends or holidays
 
 ### **Reliable Operation**
-- **Enterprise-Grade Code**: Clean, maintainable, and well-documented
-- **Error Handling**: Graceful handling of missing configuration
-- **State Management**: Proper timer cleanup and state consistency
-- **Defensive Programming**: Robust null checks and validation
+- **Fail-loud configuration** (D1): a bad config is a *failed app* in the
+  AppDaemon console — which the watchdog reports to a phone — never a
+  loaded-but-inert one. `initialize()` raises on: missing `entity`/`days`, an
+  entity or calendar that does not exist, non-numeric or non-positive `freq`
+  (four such values would otherwise hang AppDaemon's scheduler, not just this
+  app), `max_brightness` outside 1..255, non-lowercase day keys, an active day
+  missing any of start/end/turnoff, unparseable times (unquoted `6:30` is the
+  integer 390 in YAML — the raise names this), or times out of order.
+- **All times parse at startup**: nothing parses config at 06:30 on a school
+  morning; `get_today_schedule` reads pre-validated `datetime.time` objects.
+- **Timer hygiene**: fired handles cancel with `silent=True` (no
+  false-warning per morning) and the turnoff handle lives in `turnoff_timer`.
+- **Turnoff failsafe**: a cycle that starts after its own turnoff (reload
+  between end and turnoff) turns the light OFF loudly instead of ramping with
+  no turnoff timer.
+- **DST-safe arithmetic**: all delays are epoch-seconds via
+  `_seconds_between`; the wall clock is AppDaemon's `get_now()`.
 
 ## 🚀 Benefits
 
@@ -169,9 +182,19 @@ wakeupLight:
   timer
 
 ### **Exception Handling**
-- **Calendar Exceptions**: Respects calendar events to skip wakeup lights
-- **Inactive Days**: Automatically skips days marked as inactive
-- **Error Recovery**: Graceful handling of missing configuration or entities
+- **Calendar Exceptions**: only a calendar that literally reads `on`
+  suppresses the wake-up. The calendar is resolved **synchronously at
+  startup** (so an AppDaemon reload mid-morning honours an active exception)
+  and re-checked daily at 03:30.
+- **Fail-open on ambiguity** (owner decision 2026-08-30): if the calendar
+  reads `unavailable`/`unknown` — HA restarting overnight, integration not
+  yet loaded — the app logs a WARNING, **wakes anyway**, and sends a phone
+  notification (channel `watchdog_alerts`, once per day at most). A spurious
+  wake-up on a holiday is recoverable; a missed school morning is not.
+- **Inactive Days**: days with `active: false` are skipped; a *partially*
+  specified active day is a startup error, never silently default-filled.
+- **Missing configuration or entities**: not "recovered" — refused at
+  startup, loudly (see Reliable Operation).
 
 ## 🔍 Troubleshooting
 
