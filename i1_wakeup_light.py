@@ -106,19 +106,101 @@ class WakeupLight(hass.Hass):
             else cal_name if str(cal_name).startswith("calendar.")
             else f"calendar.{cal_name}"
         )
-        self.calendar_exception_cached = False
+        # A configured-but-missing calendar entity is a config error, caught
+        # here per D1 -- different in kind from an entity that exists but
+        # reads unavailable at 03:30, which is handled fail-open below.
+        if self.cal_entity and not self.entity_exists(self.cal_entity):
+            raise ValueError(f"calendar entity {self.cal_entity!r} does not "
+                             f"exist in Home Assistant")
+
+        # Ambiguity notifications reuse the watchdog's target (T-33 step 3
+        # scope note: one notification mechanism, not two).
+        self.notify_targets = self.args.get(
+            "notify_targets", ["mobile_app_pixel_9_pro"])
+        # Reuses the watchdog's channel: it is proven delivering on the
+        # operator's phone, and a brand-new channel would be discarded by
+        # Android until someone creates it there (the T-52 trap).
+        self.notification_channel = self.args.get(
+            "notification_channel", "watchdog_alerts")
+        self.notification_priority = self.args.get(
+            "notification_priority", "high")
+        self._ambiguity_notified_on = None
+
         self.active_timer = None
         self.turnoff_timer = None
+
+        # T-33 step 4 (S9-07): resolve the calendar SYNCHRONOUSLY, before the
+        # first setup_day_schedule. The old code initialised the cache to
+        # False and only consulted the calendar at 03:30 -- so any AD restart
+        # or apps.yaml reload between 03:30 and the wake window ignored an
+        # ACTIVE exception and ramped the light anyway (C2; the reload path
+        # is routine, and the exception calendar was live when this ticket
+        # was filed). If HA's plugin is not fully warm and the read comes
+        # back unavailable, step 3's fail-open direction applies: wake.
+        self.calendar_exception_cached = self._read_calendar_exception()
 
         self.log(f"WakeupLight started for {self.entity}")
         self.run_in(self.setup_day_schedule, 0)
         self.run_daily(self.check_calendar_exception, "03:30:00")
 
+    def _notification_data(self):
+        """Companion-app data block (T-52): a notification without a channel
+        lands on the phone's disabled default channel and is discarded while
+        HA reports success."""
+        if not self.notification_channel:
+            return {}
+        return {"channel": self.notification_channel,
+                "priority": self.notification_priority, "ttl": 0}
+
+    def _read_calendar_exception(self):
+        """True only when the calendar literally reads 'on'.
+
+        Failure direction DECIDED BY OWNER 2026-08-30: WAKE ANYWAY, AND
+        NOTIFY. 'unavailable'/'unknown'/''/None all mean "we cannot know" --
+        and a spurious wake-up on a holiday is recoverable where a missed
+        school morning is not. The old `!= "off"` treated every one of those
+        as an active exception and silently skipped the day (C3), with one
+        INFO line as the only trace; that is why the notification is part of
+        the owner's decision, not an optional extra.
+        """
+        if not self.cal_entity:
+            return False
+        state = self.get_state(self.cal_entity)
+        if state == "on":
+            return True
+        if state != "off":
+            self.log(
+                f"calendar {self.cal_entity} reads {state!r} -- ambiguous, "
+                f"proceeding WITH the wake-up (owner decision 2026-08-30) "
+                f"and notifying", level="WARNING",
+            )
+            self._notify_ambiguity(state)
+        return False
+
+    def _notify_ambiguity(self, state):
+        """Tell a human the same morning; at most once per day."""
+        today = self.get_now().date()
+        if self._ambiguity_notified_on == today:
+            return
+        self._ambiguity_notified_on = today
+        for target in self.notify_targets:
+            try:
+                self.call_service(
+                    f"notify/{target}",
+                    title="Vaknalampan: kalendern gick inte att läsa",
+                    message=(
+                        f"{self.cal_entity} är {state!r}. Lampan kör ändå "
+                        f"(hellre en väckning för mycket än en missad "
+                        f"skolmorgon)."),
+                    data=self._notification_data(),
+                )
+            except Exception as e:
+                self.log(f"ambiguity notification to {target} failed: {e}",
+                         level="ERROR")
+
     def check_calendar_exception(self, kwargs):
         """Check calendar exception once at 03:30 and cache result"""
-        self.calendar_exception_cached = (
-            bool(self.cal_entity) and self.get_state(self.cal_entity) != "off"
-        )
+        self.calendar_exception_cached = self._read_calendar_exception()
         if self.calendar_exception_cached:
             self.log("Calendar exception active")
         self.setup_day_schedule()
