@@ -113,6 +113,30 @@ class WakeupLight(hass.Hass):
             raise ValueError(f"calendar entity {self.cal_entity!r} does not "
                              f"exist in Home Assistant")
 
+        # T-61: a single override point for the ramp. The calendar no longer
+        # gates the ramp directly -- at 03:30 it WRITES this switch, and the
+        # ramp reads only the switch. That gives one thing to look at on the
+        # dashboard and one thing to flip, and unlike the 03:30 cache it is
+        # honoured mid-ramp (checked on every brightness tick), which is the
+        # case that prompted this: a child found to be ill at 07:00, with the
+        # ramp already running and the cached calendar decision unreachable.
+        #
+        # OPTIONAL by design. The deployed config does not carry this key, and
+        # a required key would raise at initialize() and kill the alarm on the
+        # deploy before the config is updated (PROJECT_RULES section 6: the
+        # validator must be proven against the live config). Absent = exactly
+        # today's behaviour.
+        ov = self.args.get("override_switch")
+        self.override_entity = (
+            None if not ov
+            else ov if str(ov).startswith("input_boolean.")
+            else f"input_boolean.{ov}"
+        )
+        if self.override_entity and not self.entity_exists(self.override_entity):
+            raise ValueError(
+                f"override_switch entity {self.override_entity!r} does not "
+                f"exist in Home Assistant")
+
         # Ambiguity notifications reuse the watchdog's target (T-33 step 3
         # scope note: one notification mechanism, not two).
         self.notify_targets = self.args.get(
@@ -177,6 +201,29 @@ class WakeupLight(hass.Hass):
             self._notify_ambiguity(state)
         return False
 
+    def _override_allows_ramp(self):
+        """False ONLY when the override switch literally reads 'off'.
+
+        Same failure direction as the calendar, and for the same owner
+        decision of 2026-08-30: anything we cannot read means WAKE, AND
+        NOTIFY. A switch that is unavailable must not silently cancel a
+        school morning -- that is precisely the C3 failure this app already
+        carries a notification for.
+        """
+        if not self.override_entity:
+            return True
+        state = self.get_state(self.override_entity)
+        if state == "off":
+            return False
+        if state != "on":
+            self.log(
+                f"override {self.override_entity} reads {state!r} -- "
+                f"ambiguous, proceeding WITH the wake-up (owner decision "
+                f"2026-08-30) and notifying", level="WARNING",
+            )
+            self._notify_ambiguity(state)
+        return True
+
     def _notify_ambiguity(self, state):
         """Tell a human the same morning; at most once per day."""
         today = self.get_now().date()
@@ -199,11 +246,35 @@ class WakeupLight(hass.Hass):
                          level="ERROR")
 
     def check_calendar_exception(self, kwargs):
-        """Check calendar exception once at 03:30 and cache result"""
+        """At 03:30, turn the calendar's answer into the override switch.
+
+        T-61: the calendar drives the switch; the ramp reads the switch. The
+        cache is still maintained so the app behaves exactly as before when
+        no override_switch is configured.
+        """
         self.calendar_exception_cached = self._read_calendar_exception()
         if self.calendar_exception_cached:
             self.log("Calendar exception active")
+        self._push_calendar_to_override()
         self.setup_day_schedule()
+
+    def _push_calendar_to_override(self):
+        """Set the override switch from the calendar. No-op without one."""
+        if not self.override_entity:
+            return
+        service = ("input_boolean/turn_off" if self.calendar_exception_cached
+                   else "input_boolean/turn_on")
+        try:
+            self.call_service(service, entity_id=self.override_entity)
+            self.log(
+                f"{self.override_entity} -> "
+                f"{'off' if self.calendar_exception_cached else 'on'} "
+                f"from {self.cal_entity}")
+        except Exception as e:
+            # Fail-open: leaving the switch as-is wakes the child, which is
+            # the owner's chosen direction over a missed school morning.
+            self.log(f"could not set {self.override_entity}: {e}",
+                     level="ERROR")
 
     @staticmethod
     def _parse_time_of_day(day, key, value):
@@ -276,7 +347,13 @@ class WakeupLight(hass.Hass):
                 self.cancel_timer(timer, silent=True)
         self.active_timer = self.turnoff_timer = None
 
-        if self.calendar_exception_cached:
+        # With an override switch configured it is the single gate; the
+        # calendar reaches the ramp only through it (set at 03:30).
+        if self.override_entity:
+            if not self._override_allows_ramp():
+                self.log(f"{self.override_entity} is off -- no ramp today")
+                return
+        elif self.calendar_exception_cached:
             return
 
         now = self.get_now()
@@ -323,6 +400,14 @@ class WakeupLight(hass.Hass):
             if not schedule:
                 return
 
+        # Re-read at fire time, not just at scheduling time: the switch may
+        # have been flipped in the hours between.
+        if not self._override_allows_ramp():
+            self.log(f"{self.override_entity} is off at cycle start -- "
+                     f"turning {self.entity} off instead of ramping")
+            self.turn_off_light()
+            return
+
         start_time, end_time, turnoff_time = schedule['start'], schedule['end'], schedule['turnoff']
         ramp_duration = self._seconds_between(end_time, start_time)
 
@@ -356,7 +441,19 @@ class WakeupLight(hass.Hass):
         self.turnoff_timer = self.run_in(self.turn_off_light, turnoff_delay)
 
     def adjust_brightness(self, kwargs):
-        """Adjust brightness based on time progression"""
+        """Adjust brightness based on time progression.
+
+        T-61: the override is checked on every tick. Flipping the switch off
+        mid-ramp turns the lamp off within one `freq` interval -- the whole
+        point of the feature, and the thing the 03:30 calendar cache could
+        not do.
+        """
+        if not self._override_allows_ramp():
+            self.log(f"{self.override_entity} switched off mid-ramp -- "
+                     f"turning {self.entity} off")
+            self.turn_off_light()
+            return
+
         ramp_duration = kwargs['ramp_duration']
         start_time = kwargs['start_time']
         end_time = kwargs['end_time']

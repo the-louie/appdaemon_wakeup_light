@@ -54,3 +54,21 @@ wakeupLight:
       active: false             # No wakeup light on weekends
     sunday:
       active: false             # No wakeup light on weekends
+
+  # T-61. The single override point for the ramp. The calendar no longer gates
+  # the ramp directly -- at 03:30 the app WRITES this switch from the calendar,
+  # and the ramp reads only the switch, on EVERY brightness tick. So flipping it
+  # off stops a ramp that is already running, within one `freq` interval.
+  #
+  # Accepts a bare name or the full entity id. Create it as a Home Assistant
+  # helper (Settings > Devices & services > Helpers > Toggle).
+  #
+  # OPTIONAL: leave it out and the app behaves exactly as before, gating on the
+  # calendar cached at 03:30. A configured-but-MISSING entity raises at
+  # initialize() (D1), because a guard bound to a missing entity is not a guard.
+  #
+  # Failure direction, owner decision 2026-08-30, unchanged: only a literal
+  # "off" suppresses the ramp. unavailable/unknown/empty all mean "we cannot
+  # know", and those WAKE AND NOTIFY -- a spurious wake-up is recoverable where
+  # a missed school morning is not.
+  override_switch: input_boolean.vaknalampa_aktiv
